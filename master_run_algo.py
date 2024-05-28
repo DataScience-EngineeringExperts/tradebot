@@ -4,34 +4,43 @@ import time
 import os
 import logging
 
-# Create a logger
+# Configure the logger
 logging.basicConfig(filename='logfile.log', level=logging.INFO,
                     format='%(asctime)s:%(levelname)s:%(message)s')
 
-# Get the current script's absolute directory path
-script_dir = os.path.dirname(os.path.abspath(__file__))
+# Adjust system path to include the directory where the teams_communicator module is located
+script_dir = os.path.dirname(os.path.abspath(__file__))  # Gets the directory where the current script is located
+sys.path.append(os.path.join(script_dir, '..', 'DSEalgo_v2'))  # Appends the path to the module
+
+from teams_communicator import TeamsCommunicator  # Now we can import TeamsCommunicator
 
 # List your scripts in the desired order of execution
 scripts = [
     "alphavantagetickers.py",
     "company_overviews.py",
-    "selected_pairs_history.py",
-    "bracket_order.py"
+    "selected_pairs_history.py"
 ]
 
-# Function to run the script and handle errors with retries
+def check_script_exists(script_path):
+    if not os.path.exists(script_path):
+        logging.error(f"Script {script_path} does not exist.")
+        return False
+    return True
+
 def run_script_with_retries(script, max_retries=2, wait_time=20):
     retries = 0
     while retries <= max_retries:
-        logging.info(f"Running {script}")
+        logging.info(f"Attempting to run {script}")
 
-        # Construct the absolute path of the script
         script_path = os.path.join(script_dir, script)
+        if not check_script_exists(script_path):
+            logging.error(f"Script file missing: {script}")
+            break
 
-        # Run the script and capture its exit code
         try:
-            subprocess.check_call(["python3", script_path])
-            break  # If the script is successful, break the loop
+            subprocess.check_call([sys.executable, script_path])
+            logging.info(f"Successfully ran {script}")
+            break
         except subprocess.CalledProcessError as e:
             logging.error(f"Error occurred while running {script}, exit code: {e.returncode}")
             retries += 1
@@ -42,6 +51,11 @@ def run_script_with_retries(script, max_retries=2, wait_time=20):
                 logging.error(f"Script {script} failed after {max_retries} retries. Skipping this script and moving to the next one.")
                 break
 
-# Iterate over the scripts list and execute them one by one
-for script in scripts:
-    run_script_with_retries(script)
+if __name__ == "__main__":
+    communicator = TeamsCommunicator("ml_database", "run_logs")
+    for script in scripts:
+        run_script_with_retries(script)
+        success_message = f"The {script} ran successfully."
+        communicator.send_teams_message(success_message)
+
+

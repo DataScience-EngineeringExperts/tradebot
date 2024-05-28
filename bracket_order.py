@@ -1,3 +1,4 @@
+from datetime import datetime
 from risk_strategy import RiskManagement, risk_params
 from alpha_vantage.timeseries import TimeSeries
 import alpaca_trade_api as tradeapi
@@ -8,6 +9,7 @@ import json
 import os
 from dotenv import load_dotenv
 import logging
+import random
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -15,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 load_dotenv()
 
 # Database configuration
-MONGO_DB_CONN_STRING = os.getenv("MONGO_CONN_STRING")
+MONGO_DB_CONN_STRING = os.getenv("MONGO_DB_CONN_STRING")
 
 # Initialize MongoDB client
 mongo_client = MongoClient(MONGO_DB_CONN_STRING)
@@ -80,8 +82,11 @@ def send_teams_message(message):
 
 def place_order(api, symbol, shares, close_price):
     try:
-        # Check if the drawdown limit has been reached
-        if rm.check_risk_before_order():
+        # Convert shares to the correct type and round if necessary
+        shares_to_order = round(float(shares))
+
+        # Check if the drawdown limit has been reached and if it's safe to place an order
+        if rm.check_risk_before_order(symbol, shares_to_order):
             take_profit = {"limit_price": round(close_price * 1.0243, 2)}
             stop_loss = {"stop_price": round(close_price * 0.9821, 2)}
             client_order_id = f"gcos_{random.randrange(100000000)}"
@@ -89,7 +94,7 @@ def place_order(api, symbol, shares, close_price):
 
             order = api.submit_order(
                 symbol=symbol,
-                qty=round(float(shares)),  # Shares rounded to the nearest whole number
+                qty=shares_to_order,  # Shares rounded to the nearest whole number
                 side='buy',
                 type='limit',
                 limit_price=round(close_price, 2),
@@ -101,21 +106,20 @@ def place_order(api, symbol, shares, close_price):
             )
             print(f"{symbol}: order placed successfully!")
 
-            # # Print the response from the API
-            # print(f"{symbol}: Order API response: {order}")
-
             # Create a message to send to Teams channel
-            message = f"Order placed successfully! Symbol: {symbol}, Shares: {shares}, Price: {close_price}"
+            message = f"Order placed successfully! Symbol: {symbol}, Shares: {shares_to_order}, Price: {close_price}"
             # Send message to Teams
             send_teams_message(message)
 
             return True
         else:
-            print(f"Max drawdown limit reached, order for {symbol} not placed")
+            print(f"Risk parameters rejected order for {symbol} at {datetime.now()}")
+            return False
 
     except Exception as e:
         print(f"Order for {symbol} could not be placed: {str(e)}")
         return False
+
 
 cash_balance = api.get_account().cash
 portfolio_balance = float(api.get_account().portfolio_value)
@@ -157,32 +161,34 @@ def handle_symbol(symbol):
         recent_macd = float(macd_point['MACD'])
         recent_signal = float(macd_point['MACD_Signal'])
         recent_sma = float(sma_point['SMA'])
+        print(f'Recent RSI: {recent_rsi}, Recent MACD: {recent_macd}, Recent SMA: {recent_sma}, Recent Signal: {recent_signal}, Recent Close: {recent_close}')
 
-        if recent_rsi <= 30:
-            print(f"{symbol}: RSI condition met.")
-        else:
-            print(f"{symbol}: RSI condition not met.")
+        if recent_rsi <= 60 and recent_macd >= recent_signal and recent_close >= recent_sma:
+            print(f"{symbol}: All conditions met.")
 
-        if recent_macd >= recent_signal:
-            print(f"{symbol}: MACD condition met.")
-        else:
-            print(f"{symbol}: MACD condition not met.")
-
-        if recent_close >= recent_sma:
-            print(f"{symbol}: Price above SMA condition met.")
-        else:
-            print(f"{symbol}: Price above SMA condition not met.")
-
-        if recent_rsi <= 30 and recent_macd >= recent_signal and recent_close >= recent_sma:
             # Check if we already have a position or an open order for this symbol
             if symbol in current_holdings or symbol in open_orders_symbols:
                 print(f"Already hold a position or have an open order in {symbol}, skipping order...")
             else:
-                shares = int(portfolio_balance * maximum_risk_per_trade) / recent_close
+                # Calculate the maximum allowable trade value
+                max_trade_value = portfolio_balance * maximum_risk_per_trade
 
-                print(f"{symbol}: All conditions met. Place order for: {shares} shares.")
+                # Ensure we keep at least 10% of the portfolio as cash
+                available_cash = float(api.get_account().cash)
+                min_cash_on_hand = portfolio_balance * 0.1
 
-                place_order(api, symbol, shares, recent_close)
+                if available_cash - (max_trade_value / recent_close) * recent_close < min_cash_on_hand:
+                    max_trade_value = (available_cash - min_cash_on_hand)
+
+                # Calculate the number of shares to buy
+                shares = max_trade_value // recent_close
+
+                # Ensure the trade complies with risk management rules
+                if shares > 0 and rm.validate_trade(symbol, shares, 'buy'):
+                    print(f"{symbol}: Placing order for {shares} shares.")
+                    place_order(api, symbol, shares, recent_close)
+                else:
+                    print(f"{symbol}: Trade not valid or shares to buy is zero.")
         else:
             print(f"{symbol}: Not all conditions met. No order placed.")
     except ValueError:

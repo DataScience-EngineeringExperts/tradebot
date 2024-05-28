@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Load environment variables
 load_dotenv()
 API_KEY = os.getenv('ALPHA_VANTAGE_API')
-MONGO_DB_CONN_STRING = os.getenv('mongo_db_conn_string')
+MONGO_DB_CONN_STRING = os.getenv('MONGO_DB_CONN_STRING')
 
 # Initialize the MongoManager
 mongo_manager = MongoManager(MONGO_DB_CONN_STRING, 'stock_data')
@@ -81,6 +81,7 @@ def retrieve_company_overview(api_key, symbol):
 
 
 def fetch_and_store_company_overviews(api_key, tickers_list, mongo_manager, collection_name):
+    RATE_LIMIT_CALLS = 285  # Adjust the API call limit here
     company_overviews_list = []
     processed_requests = 0
     total_tickers = len(tickers_list)
@@ -94,12 +95,12 @@ def fetch_and_store_company_overviews(api_key, tickers_list, mongo_manager, coll
             data = future.result()
 
             # Check if we've reached the rate limit
-            if len(request_timestamps) >= 75:
-                # Calculate time since the 75th last request
-                time_since_75th_last_request = datetime.now() - request_timestamps[-75]
+            if len(request_timestamps) >= RATE_LIMIT_CALLS:
+                # Calculate time since the RATE_LIMIT_CALLS-th last request
+                time_since_limit_last_request = datetime.now() - request_timestamps[-RATE_LIMIT_CALLS]
                 # If it's been less than a minute, sleep for the remaining time
-                if time_since_75th_last_request.total_seconds() < 60:
-                    sleep_time = 60 - time_since_75th_last_request.total_seconds()
+                if time_since_limit_last_request.total_seconds() < 60:
+                    sleep_time = 60 - time_since_limit_last_request.total_seconds()
                     logging.info(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds.")
                     time.sleep(sleep_time)
 
@@ -109,7 +110,7 @@ def fetch_and_store_company_overviews(api_key, tickers_list, mongo_manager, coll
 
             if data:
                 company_overviews_list.append(data)
-                processed_requests += 1  # Increment here to ensure it's done once per ticker
+                processed_requests += 1
 
             # Logging progress and time remaining after processing each future
             progress = (processed_requests / total_tickers) * 100
@@ -120,6 +121,7 @@ def fetch_and_store_company_overviews(api_key, tickers_list, mongo_manager, coll
 
     # Use MongoManager to insert documents with deduplication
     mongo_manager.insert_with_deduplication(collection_name, company_overviews_list)
+
 
 def main():
     start_time = datetime.now()
